@@ -22,7 +22,7 @@ export const getPatientNotifications = async (c: Context) => {
       where: whereClause,
       order: [['createdAt', 'DESC']],
       limit: parseInt(limit),
-      offset: parseInt(offset)
+      offset: offset
     });
 
     const unreadCount = await Notification.count({
