@@ -1,6 +1,8 @@
-const { Queue, User, PracticeSettings, ActivityLog, EmergencyClosure } = require('../models');
-const { Op } = require('sequelize');
-const { logActivity } = require('../utils/activityLogger');
+import { Context } from 'hono';
+import { Queue, User, PracticeSettings, EmergencyClosure } from '../models/index.js';
+import { Op } from 'sequelize';
+import { logActivity } from '../utils/activityLogger.js';
+import { io } from '../index.js';
 
 // Helper function to get current date in WITA timezone
 const getWitaDateString = () => {
@@ -9,23 +11,23 @@ const getWitaDateString = () => {
   return witaTime.toISOString().split('T')[0];
 };
 
-const getAvailableSlots = async (req, res) => {
+export const getAvailableSlots = async (c: Context) => {
   try {
-    const { date } = req.query;
+    const { date } = c.req.query();
     
     if (!date) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Parameter tanggal diperlukan'
-      });
+      }, 400);
     }
 
     const settings = await PracticeSettings.findOne({ where: { isActive: true } });
     if (!settings) {
-      return res.status(500).json({
+      return c.json({
         success: false,
         message: 'Pengaturan praktik belum dikonfigurasi'
-      });
+      }, 500);
     }
 
     const requestDate = new Date(date);
@@ -42,7 +44,7 @@ const getAvailableSlots = async (req, res) => {
         },
         include: [{ model: User, as: 'creator', attributes: ['fullName'] }]
       });
-    } catch (error) {
+    } catch (error: any) {
       console.log('Emergency closure table not available yet:', error.message);
     }
 
@@ -56,11 +58,11 @@ const getAvailableSlots = async (req, res) => {
             status: 'emergency_cancelled'
           }
         });
-      } catch (error) {
+      } catch (error: any) {
         console.log('Could not count emergency cancelled queues:', error.message);
       }
 
-      return res.json({
+      return c.json({
         success: true,
         data: {
           date,
@@ -68,7 +70,7 @@ const getAvailableSlots = async (req, res) => {
           isEmergencyClosure: true,
           emergencyClosure: {
             reason: emergencyClosure.reason,
-            createdBy: emergencyClosure.creator.fullName,
+            createdBy: (emergencyClosure as any).creator.fullName,
             createdAt: emergencyClosure.createdAt,
             affectedQueuesCount
           },
@@ -85,7 +87,7 @@ const getAvailableSlots = async (req, res) => {
     if (!settings.operatingDays.includes(dayOfWeek)) {
       const operatingDayNames = settings.operatingDays.map(day => dayNames[day]);
       
-      return res.json({
+      return c.json({
         success: true,
         data: {
           date,
@@ -107,7 +109,7 @@ const getAvailableSlots = async (req, res) => {
     const bookedQueues = await Queue.findAll({
       where: {
         appointmentDate: date,
-        status: { [Op.not]: 'cancelled' }
+        status: { [Op.not]: 'cancelled' } as any
       },
       attributes: ['queueNumber'],
       order: [['queueNumber', 'ASC']]
@@ -116,7 +118,7 @@ const getAvailableSlots = async (req, res) => {
     const totalBooked = bookedQueues.length;
     const availableSlots = settings.maxSlotsPerDay - totalBooked;
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         date,
@@ -131,46 +133,54 @@ const getAvailableSlots = async (req, res) => {
     });
   } catch (error) {
     console.error('Get available slots error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const bookQueue = async (req, res) => {
+export const bookQueue = async (c: Context) => {
   try {
-    const { appointmentDate } = req.body;
-    const userId = req.user.id;
+    const { appointmentDate } = await c.req.json();
+    const user = c.get('user');
+    const userId = user.id;
 
     const existingQueue = await Queue.findOne({
       where: {
         userId,
         appointmentDate,
-        status: { [Op.not]: 'cancelled' }
+        status: { [Op.not]: 'cancelled' } as any
       }
     });
 
     if (existingQueue) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Anda sudah memiliki antrian pada tanggal tersebut'
-      });
+      }, 400);
     }
 
     const settings = await PracticeSettings.findOne({ where: { isActive: true } });
+    if (!settings) {
+         return c.json({
+        success: false,
+        message: 'Pengaturan praktik belum dikonfigurasi'
+      }, 500);
+    }
+
     const queueCount = await Queue.count({
       where: {
         appointmentDate,
-        status: { [Op.not]: 'cancelled' }
+        status: { [Op.not]: 'cancelled' } as any
       }
     });
 
     if (queueCount >= settings.maxSlotsPerDay) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Slot antrian untuk tanggal tersebut sudah penuh'
-      });
+      }, 400);
     }
 
     const queueNumber = queueCount + 1;
@@ -178,44 +188,48 @@ const bookQueue = async (req, res) => {
     const queue = await Queue.create({
       userId,
       appointmentDate,
-      queueNumber
+      queueNumber,
+      status: 'waiting'
     });
 
     const queueWithUser = await Queue.findByPk(queue.id, {
       include: [{ model: User, as: 'patient', attributes: ['fullName', 'phoneNumber'] }]
     });
 
+    if (!queueWithUser) throw new Error('Queue not found after creation');
+
     // Log activity
     await logActivity({
       type: 'queue_created',
       title: 'Antrian baru dibuat',
-      description: `${queueWithUser.patient.fullName} membuat antrian nomor ${queueWithUser.queueNumber}`,
+      description: `${(queueWithUser as any).patient.fullName} membuat antrian nomor ${queueWithUser.queueNumber}`,
       userId: queueWithUser.userId,
       queueId: queueWithUser.id,
       metadata: {
         queueNumber: queueWithUser.queueNumber,
         appointmentDate: queueWithUser.appointmentDate,
-        patientName: queueWithUser.patient.fullName
+        patientName: (queueWithUser as any).patient.fullName
       }
     });
 
-    res.status(201).json({
+    return c.json({
       success: true,
       message: 'Antrian berhasil dibuat',
       data: { queue: queueWithUser }
-    });
+    }, 201);
   } catch (error) {
     console.error('Book queue error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getMyQueues = async (req, res) => {
+export const getMyQueues = async (c: Context) => {
   try {
-    const userId = req.user.id;
+    const user = c.get('user');
+    const userId = user.id;
     
     const queues = await Queue.findAll({
       where: { userId },
@@ -223,20 +237,20 @@ const getMyQueues = async (req, res) => {
       limit: 20
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: { queues }
     });
   } catch (error) {
     console.error('Get my queues error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getCurrentQueue = async (req, res) => {
+export const getCurrentQueue = async (c: Context) => {
   try {
     const today = getWitaDateString();
     
@@ -257,7 +271,7 @@ const getCurrentQueue = async (req, res) => {
       order: [['queueNumber', 'ASC']]
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         currentQueue,
@@ -267,34 +281,35 @@ const getCurrentQueue = async (req, res) => {
     });
   } catch (error) {
     console.error('Get current queue error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const cancelQueue = async (req, res) => {
+export const cancelQueue = async (c: Context) => {
   try {
-    const { queueId } = req.params;
-    const userId = req.user.id;
+    const queueId = c.req.param('queueId');
+    const user = c.get('user');
+    const userId = user.id;
 
     const queue = await Queue.findOne({
       where: { id: queueId, userId }
     });
 
     if (!queue) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Antrian tidak ditemukan'
-      });
+      }, 404);
     }
 
     if (queue.status !== 'waiting') {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Antrian tidak dapat dibatalkan'
-      });
+      }, 400);
     }
 
     // Check if it's still possible to cancel (e.g., not on the same day or past operating hours)
@@ -306,10 +321,10 @@ const cancelQueue = async (req, res) => {
     const currentHour = now.getHours();
     
     if (appointmentDate === today && currentHour >= 8) { // Assuming practice starts at 8 AM
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Antrian tidak dapat dibatalkan pada hari yang sama setelah jam praktik dimulai'
-      });
+      }, 400);
     }
 
     await queue.update({ status: 'cancelled' });
@@ -318,35 +333,37 @@ const cancelQueue = async (req, res) => {
       include: [{ model: User, as: 'patient', attributes: ['fullName', 'phoneNumber'] }]
     });
 
+    if (!queueWithUser) throw new Error('Queue not found after update');
+
     // Log activity
     await logActivity({
       type: 'queue_cancelled',
       title: 'Antrian dibatalkan',
-      description: `${queueWithUser.patient.fullName} membatalkan antrian nomor ${queueWithUser.queueNumber}`,
+      description: `${(queueWithUser as any).patient.fullName} membatalkan antrian nomor ${queueWithUser.queueNumber}`,
       userId: queueWithUser.userId,
       queueId: queueWithUser.id,
       metadata: {
         queueNumber: queueWithUser.queueNumber,
-        patientName: queueWithUser.patient.fullName,
+        patientName: (queueWithUser as any).patient.fullName,
         appointmentDate: queueWithUser.appointmentDate,
         cancelledAt: new Date()
       }
     });
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Antrian berhasil dibatalkan'
     });
   } catch (error) {
     console.error('Cancel queue error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const callNextQueue = async (req, res) => {
+export const callNextQueue = async (c: Context) => {
   try {
     const today = getWitaDateString();
     
@@ -359,10 +376,10 @@ const callNextQueue = async (req, res) => {
     });
 
     if (currentQueue) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Masih ada pasien yang sedang dilayani'
-      });
+      }, 400);
     }
 
     // Get next waiting queue
@@ -376,10 +393,10 @@ const callNextQueue = async (req, res) => {
     });
 
     if (!nextQueue) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Tidak ada antrian yang menunggu'
-      });
+      }, 404);
     }
 
     // Update queue status to in_service
@@ -392,41 +409,41 @@ const callNextQueue = async (req, res) => {
     await logActivity({
       type: 'queue_called',
       title: 'Antrian dipanggil',
-      description: `${nextQueue.patient.fullName} (Nomor ${nextQueue.queueNumber}) dipanggil untuk dilayani`,
+      description: `${(nextQueue as any).patient.fullName} (Nomor ${nextQueue.queueNumber}) dipanggil untuk dilayani`,
       userId: nextQueue.userId,
       queueId: nextQueue.id,
       metadata: {
         queueNumber: nextQueue.queueNumber,
-        patientName: nextQueue.patient.fullName,
+        patientName: (nextQueue as any).patient.fullName,
         calledAt: new Date()
       }
     });
 
     // Emit socket event for real-time updates
-    if (req.app.locals.io) {
-      req.app.locals.io.emit('queue_called', {
+    if (io) {
+      io.emit('queue_called', {
         queue: nextQueue,
-        message: `Panggilan untuk ${nextQueue.patient.fullName} - Nomor Antrian ${nextQueue.queueNumber}`
+        message: `Panggilan untuk ${(nextQueue as any).patient.fullName} - Nomor Antrian ${nextQueue.queueNumber}`
       });
     }
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Antrian berhasil dipanggil',
       data: { queue: nextQueue }
     });
   } catch (error) {
     console.error('Call next queue error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const completeQueue = async (req, res) => {
+export const completeQueue = async (c: Context) => {
   try {
-    const { queueId } = req.params;
+    const queueId = c.req.param('queueId');
     
     const queue = await Queue.findOne({
       where: { id: queueId, status: 'in_service' },
@@ -434,15 +451,15 @@ const completeQueue = async (req, res) => {
     });
 
     if (!queue) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Antrian tidak ditemukan atau tidak sedang dilayani'
-      });
+      }, 404);
     }
 
-    const serviceStartedAt = new Date(queue.serviceStartedAt);
+    const serviceStartedAt = new Date(queue.serviceStartedAt!);
     const serviceCompletedAt = new Date();
-    const actualServiceTime = Math.round((serviceCompletedAt - serviceStartedAt) / (1000 * 60)); // in minutes
+    const actualServiceTime = Math.round((serviceCompletedAt.getTime() - serviceStartedAt.getTime()) / (1000 * 60)); // in minutes
 
     await queue.update({
       status: 'completed',
@@ -454,50 +471,50 @@ const completeQueue = async (req, res) => {
     await logActivity({
       type: 'queue_completed',
       title: 'Antrian selesai',
-      description: `${queue.patient.fullName} (Nomor ${queue.queueNumber}) telah selesai dilayani`,
+      description: `${(queue as any).patient.fullName} (Nomor ${queue.queueNumber}) telah selesai dilayani`,
       userId: queue.userId,
       queueId: queue.id,
       metadata: {
         queueNumber: queue.queueNumber,
-        patientName: queue.patient.fullName,
+        patientName: (queue as any).patient.fullName,
         serviceTime: actualServiceTime,
         completedAt: serviceCompletedAt
       }
     });
 
     // Emit socket event for real-time updates
-    if (req.app.locals.io) {
-      req.app.locals.io.emit('queue_completed', {
+    if (io) {
+      io.emit('queue_completed', {
         queue: queue,
-        message: `${queue.patient.fullName} telah selesai dilayani`
+        message: `${(queue as any).patient.fullName} telah selesai dilayani`
       });
     }
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Antrian berhasil diselesaikan',
       data: { queue }
     });
   } catch (error) {
     console.error('Complete queue error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const updateQueueStatus = async (req, res) => {
+export const updateQueueStatus = async (c: Context) => {
   try {
-    const { queueId } = req.params;
-    const { status, notes } = req.body;
+    const queueId = c.req.param('queueId');
+    const { status, notes } = await c.req.json();
 
     const validStatuses = ['waiting', 'in_service', 'completed', 'cancelled', 'no_show'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Status tidak valid'
-      });
+      }, 400);
     }
 
     const queue = await Queue.findByPk(queueId, {
@@ -505,19 +522,19 @@ const updateQueueStatus = async (req, res) => {
     });
 
     if (!queue) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Antrian tidak ditemukan'
-      });
+      }, 404);
     }
 
-    const updateData = { status };
+    const updateData: any = { status };
     if (notes) updateData.notes = notes;
 
     if (status === 'completed' && queue.status === 'in_service') {
       updateData.serviceCompletedAt = new Date();
       if (queue.serviceStartedAt) {
-        const actualServiceTime = Math.round((new Date() - new Date(queue.serviceStartedAt)) / (1000 * 60));
+        const actualServiceTime = Math.round((new Date().getTime() - new Date(queue.serviceStartedAt).getTime()) / (1000 * 60));
         updateData.actualServiceTime = actualServiceTime;
       }
     }
@@ -525,13 +542,13 @@ const updateQueueStatus = async (req, res) => {
     await queue.update(updateData);
 
     // Log activity based on status
-    const activityTypes = {
+    const activityTypes: Record<string, 'queue_completed' | 'queue_cancelled' | 'queue_no_show'> = {
       'completed': 'queue_completed',
       'cancelled': 'queue_cancelled',
       'no_show': 'queue_no_show'
     };
 
-    const activityTitles = {
+    const activityTitles: Record<string, string> = {
       'completed': 'Antrian selesai',
       'cancelled': 'Antrian dibatalkan',
       'no_show': 'Pasien tidak hadir'
@@ -541,12 +558,12 @@ const updateQueueStatus = async (req, res) => {
       await logActivity({
         type: activityTypes[status],
         title: activityTitles[status],
-        description: `${queue.patient.fullName} (Nomor ${queue.queueNumber}) - ${activityTitles[status].toLowerCase()}${notes ? `. Catatan: ${notes}` : ''}`,
+        description: `${(queue as any).patient.fullName} (Nomor ${queue.queueNumber}) - ${activityTitles[status].toLowerCase()}${notes ? `. Catatan: ${notes}` : ''}`,
         userId: queue.userId,
         queueId: queue.id,
         metadata: {
           queueNumber: queue.queueNumber,
-          patientName: queue.patient.fullName,
+          patientName: (queue as any).patient.fullName,
           previousStatus: queue.status,
           newStatus: status,
           notes: notes || null,
@@ -556,36 +573,36 @@ const updateQueueStatus = async (req, res) => {
     }
 
     // Emit socket event for real-time updates
-    if (req.app.locals.io) {
-      req.app.locals.io.emit('queue_updated', {
+    if (io) {
+      io.emit('queue_updated', {
         queue: queue,
-        message: `Status antrian ${queue.patient.fullName} diubah menjadi ${status}`
+        message: `Status antrian ${(queue as any).patient.fullName} diubah menjadi ${status}`
       });
     }
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Status antrian berhasil diperbarui',
       data: { queue }
     });
   } catch (error) {
     console.error('Update queue status error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getQueuesByDate = async (req, res) => {
+export const getQueuesByDate = async (c: Context) => {
   try {
-    const { date } = req.query;
+    const { date } = c.req.query();
     
     if (!date) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Parameter tanggal diperlukan'
-      });
+      }, 400);
     }
 
     const queues = await Queue.findAll({
@@ -603,37 +620,38 @@ const getQueuesByDate = async (req, res) => {
       no_show: queues.filter(q => q.status === 'no_show').length
     };
 
-    res.json({
+    return c.json({
       success: true,
       data: { queues, stats }
     });
   } catch (error) {
     console.error('Get queues by date error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const bookQueueForPatient = async (req, res) => {
+export const bookQueueForPatient = async (c: Context) => {
   try {
-    const { appointmentDate, patientId, notes } = req.body;
+    const { appointmentDate, patientId, notes } = await c.req.json();
+    const adminUser = c.get('user');
 
     if (!appointmentDate || !patientId) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Parameter appointmentDate dan patientId diperlukan'
-      });
+      }, 400);
     }
 
     // Check if patient exists
     const patient = await User.findByPk(patientId);
     if (!patient) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Pasien tidak ditemukan'
-      });
+      }, 404);
     }
 
     // Check if patient already has a queue for this date
@@ -641,37 +659,37 @@ const bookQueueForPatient = async (req, res) => {
       where: {
         userId: patientId,
         appointmentDate,
-        status: { [Op.not]: 'cancelled' }
+        status: { [Op.not]: 'cancelled' } as any
       }
     });
 
     if (existingQueue) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Pasien sudah memiliki antrian pada tanggal tersebut'
-      });
+      }, 400);
     }
 
     const settings = await PracticeSettings.findOne({ where: { isActive: true } });
     if (!settings) {
-      return res.status(500).json({
+      return c.json({
         success: false,
         message: 'Pengaturan praktik belum dikonfigurasi'
-      });
+      }, 500);
     }
 
     const queueCount = await Queue.count({
       where: {
         appointmentDate,
-        status: { [Op.not]: 'cancelled' }
+        status: { [Op.not]: 'cancelled' } as any
       }
     });
 
     if (queueCount >= settings.maxSlotsPerDay) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Slot antrian untuk tanggal tersebut sudah penuh'
-      });
+      }, 400);
     }
 
     const queueNumber = queueCount + 1;
@@ -680,74 +698,77 @@ const bookQueueForPatient = async (req, res) => {
       userId: patientId,
       appointmentDate,
       queueNumber,
-      notes: notes || `Antrian dibuat manual oleh admin untuk ${patient.fullName}`
+      notes: notes || `Antrian dibuat manual oleh admin untuk ${patient.fullName}`,
+      status: 'waiting'
     });
 
     const queueWithUser = await Queue.findByPk(queue.id, {
       include: [{ model: User, as: 'patient', attributes: ['fullName', 'phoneNumber'] }]
     });
 
+    if (!queueWithUser) throw new Error('Queue not found after creation');
+
     // Log activity
     await logActivity({
       type: 'queue_created',
       title: 'Antrian manual dibuat oleh admin',
-      description: `Admin membuat antrian nomor ${queueWithUser.queueNumber} untuk ${queueWithUser.patient.fullName}`,
+      description: `Admin membuat antrian nomor ${queueWithUser.queueNumber} untuk ${(queueWithUser as any).patient.fullName}`,
       userId: queueWithUser.userId,
       queueId: queueWithUser.id,
       metadata: {
         queueNumber: queueWithUser.queueNumber,
         appointmentDate: queueWithUser.appointmentDate,
-        patientName: queueWithUser.patient.fullName,
+        patientName: (queueWithUser as any).patient.fullName,
         createdByAdmin: true,
-        adminUserId: req.user.id
+        adminUserId: adminUser.id
       }
     });
 
-    res.status(201).json({
+    return c.json({
       success: true,
       message: 'Antrian berhasil dibuat',
       data: { 
         queue: queueWithUser,
         queueNumber: queueWithUser.queueNumber
       }
-    });
+    }, 201);
   } catch (error) {
     console.error('Book queue for patient error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getReportsByDateRange = async (req, res) => {
+export const getReportsByDateRange = async (c: Context) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate } = c.req.query();
     
     if (!startDate || !endDate) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Parameter startDate dan endDate diperlukan'
-      });
+      }, 400);
     }
 
     // Validate date range (max 31 days)
     const start = new Date(startDate);
     const end = new Date(endDate);
-    const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+    const diffDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
     
     if (diffDays > 31) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Periode maksimal 31 hari'
-      });
+      }, 400);
     }
 
     if (start > end) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Tanggal mulai tidak boleh lebih besar dari tanggal akhir'
-      });
+      }, 400);
     }
 
     // Get all queues in date range
@@ -762,8 +783,8 @@ const getReportsByDateRange = async (req, res) => {
     });
 
     // Group by date and calculate stats
-    const dailyStats = {};
-    const totalStats = {
+    const dailyStats: any = {};
+    const totalStats: any = {
       total: 0,
       waiting: 0,
       in_service: 0,
@@ -774,6 +795,7 @@ const getReportsByDateRange = async (req, res) => {
 
     queues.forEach(queue => {
       const date = queue.appointmentDate;
+      const status = queue.status;
       
       if (!dailyStats[date]) {
         dailyStats[date] = {
@@ -789,48 +811,32 @@ const getReportsByDateRange = async (req, res) => {
       
       // Count by status
       dailyStats[date].total++;
-      dailyStats[date][queue.status]++;
+      if (dailyStats[date][status] !== undefined) {
+        dailyStats[date][status]++;
+      }
       dailyStats[date].queues.push(queue);
       
       // Add to total stats
       totalStats.total++;
-      totalStats[queue.status]++;
+      if (totalStats[status] !== undefined) {
+        totalStats[status]++;
+      }
     });
 
-    // Calculate active days (days with data)
-    const activeDays = Object.keys(dailyStats).length;
-
-    res.json({
+    return c.json({
       success: true,
       data: {
-        startDate,
-        endDate,
-        totalDays: diffDays + 1,
-        activeDays,
-        totalStats,
         dailyStats,
-        queues
+        totalStats,
+        startDate,
+        endDate
       }
     });
   } catch (error) {
-    console.error('Get reports by date range error:', error);
-    res.status(500).json({
+    console.error('Get reports error:', error);
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
-};
-
-module.exports = {
-  getAvailableSlots,
-  bookQueue,
-  getMyQueues,
-  getCurrentQueue,
-  cancelQueue,
-  callNextQueue,
-  completeQueue,
-  updateQueueStatus,
-  getQueuesByDate,
-  bookQueueForPatient,
-  getReportsByDateRange
 };

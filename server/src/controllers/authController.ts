@@ -1,22 +1,24 @@
-const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+import { Context } from 'hono';
+import jwt, { SignOptions } from 'jsonwebtoken';
+import { User } from '../models/index.js';
 
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+const generateToken = (userId: string): string => {
+  const options: SignOptions = {
     expiresIn: process.env.JWT_EXPIRE || '24h'
-  });
+  };
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'default-secret', options);
 };
 
-const register = async (req, res) => {
+export const register = async (c: Context) => {
   try {
-    const { fullName, phoneNumber, password } = req.body;
+    const { fullName, phoneNumber, password } = await c.req.json();
 
     const existingUser = await User.findOne({ where: { phoneNumber } });
     if (existingUser) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Nomor telepon sudah terdaftar'
-      });
+      }, 400);
     }
 
     const user = await User.create({
@@ -28,55 +30,55 @@ const register = async (req, res) => {
 
     const token = generateToken(user.id);
 
-    res.status(201).json({
+    return c.json({
       success: true,
       message: 'Registrasi berhasil',
       data: {
         user,
         token
       }
-    });
+    }, 201);
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const login = async (req, res) => {
+export const login = async (c: Context) => {
   try {
-    const { phoneNumber, password } = req.body;
+    const { phoneNumber, password } = await c.req.json();
 
     const user = await User.findOne({ where: { phoneNumber } });
     if (!user) {
-      return res.status(401).json({
+      return c.json({
         success: false,
         message: 'Nomor telepon atau password salah'
-      });
+      }, 401);
     }
 
     if (!user.isActive) {
-      return res.status(401).json({
+      return c.json({
         success: false,
         message: 'Akun Anda tidak aktif. Silakan hubungi admin'
-      });
+      }, 401);
     }
 
     const isPasswordValid = await user.validatePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({
+      return c.json({
         success: false,
         message: 'Nomor telepon atau password salah'
-      });
+      }, 401);
     }
 
     await user.update({ lastLogin: new Date() });
 
     const token = generateToken(user.id);
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Login berhasil',
       data: {
@@ -86,32 +88,28 @@ const login = async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const me = async (req, res) => {
+export const me = async (c: Context) => {
   try {
-    res.json({
+    const user = c.get('user');
+    
+    return c.json({
       success: true,
       data: {
-        user: req.user
+        user
       }
     });
   } catch (error) {
     console.error('Get profile error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
-};
-
-module.exports = {
-  register,
-  login,
-  me
 };

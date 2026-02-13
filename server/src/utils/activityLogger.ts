@@ -1,13 +1,22 @@
-const { ActivityLog } = require('../models');
+import { ActivityLog } from '../models/index.js';
 
-const logActivity = async ({
+interface LogActivityParams {
+  type: 'queue_created' | 'queue_called' | 'queue_completed' | 'queue_cancelled' | 'queue_no_show' | 'user_registered' | 'user_login' | 'settings_updated';
+  title: string;
+  description: string;
+  userId?: string;
+  queueId?: string;
+  metadata?: any;
+}
+
+export const logActivity = async ({
   type,
   title,
   description,
-  userId = null,
-  queueId = null,
-  metadata = null
-}) => {
+  userId,
+  queueId,
+  metadata
+}: LogActivityParams) => {
   try {
     await ActivityLog.create({
       type,
@@ -23,8 +32,8 @@ const logActivity = async ({
   }
 };
 
-const getActivityIcon = (type) => {
-  const icons = {
+export const getActivityIcon = (type: string) => {
+  const icons: Record<string, string> = {
     queue_created: '➕',
     queue_called: '📢',
     queue_completed: '✅', 
@@ -37,8 +46,8 @@ const getActivityIcon = (type) => {
   return icons[type] || '📋';
 };
 
-const getActivityColor = (type) => {
-  const colors = {
+export const getActivityColor = (type: string) => {
+  const colors: Record<string, string> = {
     queue_created: 'blue',
     queue_called: 'yellow',
     queue_completed: 'green',
@@ -51,10 +60,10 @@ const getActivityColor = (type) => {
   return colors[type] || 'gray';
 };
 
-const formatActivityTime = (createdAt) => {
+export const formatActivityTime = (createdAt: Date | string) => {
   const now = new Date();
   const activityTime = new Date(createdAt);
-  const diffMs = now - activityTime;
+  const diffMs = now.getTime() - activityTime.getTime();
   const diffMins = Math.floor(diffMs / (1000 * 60));
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -65,11 +74,4 @@ const formatActivityTime = (createdAt) => {
   if (diffDays < 7) return `${diffDays} hari yang lalu`;
   
   return activityTime.toLocaleDateString('id-ID');
-};
-
-module.exports = {
-  logActivity,
-  getActivityIcon,
-  getActivityColor,
-  formatActivityTime
 };

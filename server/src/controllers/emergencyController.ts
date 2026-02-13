@@ -1,18 +1,21 @@
-const { Queue, User, EmergencyClosure } = require('../models');
-const { Op } = require('sequelize');
-const { logActivity } = require('../utils/activityLogger');
-const { createEmergencyNotifications } = require('./notificationController');
+import { Context } from 'hono';
+import { Queue, User, EmergencyClosure } from '../models/index.js';
+import { Op } from 'sequelize';
+import { logActivity } from '../utils/activityLogger.js';
+import { createEmergencyNotifications } from './notificationController.js';
+import { io } from '../index.js';
 
-const createEmergencyClosure = async (req, res) => {
+export const createEmergencyClosure = async (c: Context) => {
   try {
-    const { closureDate, reason } = req.body;
-    const adminId = req.user.id;
+    const { closureDate, reason } = await c.req.json();
+    const adminUser = c.get('user');
+    const adminId = adminUser.id;
 
     if (!closureDate || !reason) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Tanggal penutupan dan alasan harus diisi'
-      });
+      }, 400);
     }
 
     // Check if there's already an active emergency closure for this date
@@ -24,17 +27,17 @@ const createEmergencyClosure = async (req, res) => {
     });
 
     if (existingClosure) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Sudah ada penutupan darurat untuk tanggal tersebut'
-      });
+      }, 400);
     }
 
     // Get all active queues for the closure date
     const affectedQueues = await Queue.findAll({
       where: {
         appointmentDate: closureDate,
-        status: { [Op.in]: ['waiting', 'in_service'] }
+        status: { [Op.in]: ['waiting', 'in_service'] } as any
       },
       include: [{ model: User, as: 'patient', attributes: ['fullName', 'phoneNumber'] }]
     });
@@ -62,14 +65,14 @@ const createEmergencyClosure = async (req, res) => {
     // Log activity for each affected queue
     for (const queue of affectedQueues) {
       await logActivity({
-        type: 'emergency_closure',
+        type: 'queue_cancelled', // Mapped to existing type
         title: 'Penutupan praktik darurat',
-        description: `Antrian ${queue.patient.fullName} (No. ${queue.queueNumber}) dibatalkan karena penutupan darurat: ${reason}`,
+        description: `Antrian ${(queue as any).patient.fullName} (No. ${queue.queueNumber}) dibatalkan karena penutupan darurat: ${reason}`,
         userId: queue.userId,
         queueId: queue.id,
         metadata: {
           queueNumber: queue.queueNumber,
-          patientName: queue.patient.fullName,
+          patientName: (queue as any).patient.fullName,
           closureReason: reason,
           emergencyClosureId: emergencyClosure.id,
           originalStatus: queue.status
@@ -79,7 +82,7 @@ const createEmergencyClosure = async (req, res) => {
 
     // Log admin activity
     await logActivity({
-      type: 'admin_emergency_closure',
+      type: 'settings_updated', // Mapped to existing type
       title: 'Admin membuat penutupan darurat',
       description: `Praktik ditutup darurat pada ${closureDate}: ${reason}. ${affectedQueues.length} antrian terpengaruh`,
       userId: adminId,
@@ -95,9 +98,9 @@ const createEmergencyClosure = async (req, res) => {
     await createEmergencyNotifications(emergencyClosure.id, affectedQueues);
 
     // Emit socket event for real-time notifications
-    if (req.app.locals.io) {
+    if (io) {
       affectedQueues.forEach(queue => {
-        req.app.locals.io.to(`user_${queue.userId}`).emit('emergency_closure', {
+        io.to(`user_${queue.userId}`).emit('emergency_closure', {
           type: 'emergency_closure',
           title: 'Praktik Ditutup Darurat',
           message: `Praktik ditutup darurat pada ${new Date(closureDate).toLocaleDateString('id-ID')}. Alasan: ${reason}`,
@@ -108,7 +111,7 @@ const createEmergencyClosure = async (req, res) => {
       });
     }
 
-    res.status(201).json({
+    return c.json({
       success: true,
       message: 'Penutupan darurat berhasil dibuat dan notifikasi telah dikirim',
       data: {
@@ -117,31 +120,31 @@ const createEmergencyClosure = async (req, res) => {
           affectedQueues: affectedQueues.map(q => ({
             id: q.id,
             queueNumber: q.queueNumber,
-            patientName: q.patient.fullName,
-            phoneNumber: q.patient.phoneNumber
+            patientName: (q as any).patient.fullName,
+            phoneNumber: (q as any).patient.phoneNumber
           }))
         }
       }
-    });
+    }, 201);
   } catch (error) {
     console.error('Create emergency closure error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getEmergencyClosures = async (req, res) => {
+export const getEmergencyClosures = async (c: Context) => {
   try {
-    const { page = 1, limit = 10, isActive } = req.query;
+    const { page = '1', limit = '10', isActive } = c.req.query();
     
-    const whereClause = {};
+    const whereClause: any = {};
     if (isActive !== undefined) {
       whereClause.isActive = isActive === 'true';
     }
 
-    const offset = (page - 1) * limit;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
     
     const closures = await EmergencyClosure.findAndCountAll({
       where: whereClause,
@@ -151,7 +154,7 @@ const getEmergencyClosures = async (req, res) => {
       offset: parseInt(offset)
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         closures: closures.rows,
@@ -159,28 +162,28 @@ const getEmergencyClosures = async (req, res) => {
           total: closures.count,
           page: parseInt(page),
           limit: parseInt(limit),
-          totalPages: Math.ceil(closures.count / limit)
+          totalPages: Math.ceil(closures.count / parseInt(limit))
         }
       }
     });
   } catch (error) {
     console.error('Get emergency closures error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const checkEmergencyClosure = async (req, res) => {
+export const checkEmergencyClosure = async (c: Context) => {
   try {
-    const { date } = req.query;
+    const { date } = c.req.query();
     
     if (!date) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'Parameter tanggal diperlukan'
-      });
+      }, 400);
     }
 
     const emergencyClosure = await EmergencyClosure.findOne({
@@ -191,7 +194,7 @@ const checkEmergencyClosure = async (req, res) => {
       include: [{ model: User, as: 'creator', attributes: ['fullName'] }]
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         hasEmergencyClosure: !!emergencyClosure,
@@ -200,31 +203,32 @@ const checkEmergencyClosure = async (req, res) => {
     });
   } catch (error) {
     console.error('Check emergency closure error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const rescheduleAffectedQueues = async (req, res) => {
+export const rescheduleAffectedQueues = async (c: Context) => {
   try {
-    const { emergencyClosureId, newDate } = req.body;
-    const adminId = req.user.id;
+    const { emergencyClosureId, newDate } = await c.req.json();
+    const adminUser = c.get('user');
+    const adminId = adminUser.id;
 
     if (!emergencyClosureId || !newDate) {
-      return res.status(400).json({
+      return c.json({
         success: false,
         message: 'ID penutupan darurat dan tanggal baru harus diisi'
-      });
+      }, 400);
     }
 
     const emergencyClosure = await EmergencyClosure.findByPk(emergencyClosureId);
     if (!emergencyClosure) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Penutupan darurat tidak ditemukan'
-      });
+      }, 404);
     }
 
     // Get all emergency cancelled queues for this closure
@@ -244,7 +248,7 @@ const rescheduleAffectedQueues = async (req, res) => {
         where: {
           userId: queue.userId,
           appointmentDate: newDate,
-          status: { [Op.not]: 'cancelled' }
+          status: { [Op.not]: 'cancelled' } as any
         }
       });
 
@@ -253,7 +257,7 @@ const rescheduleAffectedQueues = async (req, res) => {
         const queueCount = await Queue.count({
           where: {
             appointmentDate: newDate,
-            status: { [Op.not]: 'cancelled' }
+            status: { [Op.not]: 'cancelled' } as any
           }
         });
 
@@ -262,21 +266,22 @@ const rescheduleAffectedQueues = async (req, res) => {
           userId: queue.userId,
           appointmentDate: newDate,
           queueNumber: queueCount + 1,
-          notes: `Dijadwal ulang dari ${emergencyClosure.closureDate} karena penutupan darurat`
+          notes: `Dijadwal ulang dari ${emergencyClosure.closureDate} karena penutupan darurat`,
+          status: 'waiting'
         });
 
         // Log rescheduling activity
         await logActivity({
-          type: 'queue_rescheduled',
+          type: 'queue_created', // Mapped to existing type
           title: 'Antrian dijadwal ulang',
-          description: `Antrian ${queue.patient.fullName} dijadwal ulang dari ${emergencyClosure.closureDate} ke ${newDate}`,
+          description: `Antrian ${(queue as any).patient.fullName} dijadwal ulang dari ${emergencyClosure.closureDate} ke ${newDate}`,
           userId: queue.userId,
           queueId: queue.id,
           metadata: {
             originalDate: emergencyClosure.closureDate,
             newDate,
             queueNumber: queue.queueNumber,
-            patientName: queue.patient.fullName,
+            patientName: (queue as any).patient.fullName,
             rescheduledBy: adminId
           }
         });
@@ -290,7 +295,7 @@ const rescheduleAffectedQueues = async (req, res) => {
       reschedulingOffered: true
     });
 
-    res.json({
+    return c.json({
       success: true,
       message: `${rescheduledCount} antrian berhasil dijadwal ulang`,
       data: {
@@ -301,30 +306,31 @@ const rescheduleAffectedQueues = async (req, res) => {
     });
   } catch (error) {
     console.error('Reschedule affected queues error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const deactivateEmergencyClosure = async (req, res) => {
+export const deactivateEmergencyClosure = async (c: Context) => {
   try {
-    const { emergencyClosureId } = req.params;
-    const adminId = req.user.id;
+    const emergencyClosureId = c.req.param('emergencyClosureId');
+    const adminUser = c.get('user');
+    const adminId = adminUser.id;
 
     const emergencyClosure = await EmergencyClosure.findByPk(emergencyClosureId);
     if (!emergencyClosure) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Penutupan darurat tidak ditemukan'
-      });
+      }, 404);
     }
 
     await emergencyClosure.update({ isActive: false });
 
     await logActivity({
-      type: 'emergency_closure_deactivated',
+      type: 'settings_updated', // Mapped to existing
       title: 'Penutupan darurat dinonaktifkan',
       description: `Penutupan darurat pada ${emergencyClosure.closureDate} dinonaktifkan`,
       userId: adminId,
@@ -335,23 +341,15 @@ const deactivateEmergencyClosure = async (req, res) => {
       }
     });
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Penutupan darurat berhasil dinonaktifkan'
     });
   } catch (error) {
     console.error('Deactivate emergency closure error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
-};
-
-module.exports = {
-  createEmergencyClosure,
-  getEmergencyClosures,
-  checkEmergencyClosure,
-  rescheduleAffectedQueues,
-  deactivateEmergencyClosure
 };

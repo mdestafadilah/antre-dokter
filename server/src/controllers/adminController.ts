@@ -1,31 +1,33 @@
-const { PracticeSettings } = require('../models');
+import { Context } from 'hono';
+import { PracticeSettings } from '../models/index.js';
 
-const getSettings = async (req, res) => {
+export const getSettings = async (c: Context) => {
   try {
     const settings = await PracticeSettings.findOne({ where: { isActive: true } });
     
     if (!settings) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Pengaturan tidak ditemukan'
-      });
+      }, 404);
     }
 
-    res.json({
+    return c.json({
       success: true,
       data: { settings }
     });
   } catch (error) {
     console.error('Get settings error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const updateSettings = async (req, res) => {
+export const updateSettings = async (c: Context) => {
   try {
+    const body = await c.req.json();
     const {
       doctorName,
       practiceName,
@@ -36,7 +38,7 @@ const updateSettings = async (req, res) => {
       maxSlotsPerDay,
       allowWalkIn,
       cancellationDeadline
-    } = req.body;
+    } = body;
 
     let settings = await PracticeSettings.findOne({ where: { isActive: true } });
     
@@ -69,21 +71,16 @@ const updateSettings = async (req, res) => {
       });
     }
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Pengaturan berhasil diperbarui',
       data: { settings }
     });
   } catch (error) {
     console.error('Update settings error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
-};
-
-module.exports = {
-  getSettings,
-  updateSettings
 };

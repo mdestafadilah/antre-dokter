@@ -1,18 +1,20 @@
-const { User, Queue, ActivityLog } = require('../models');
-const { Op } = require('sequelize');
+import { Context } from 'hono';
+import { User, Queue, ActivityLog } from '../models/index.js';
+import { Op } from 'sequelize';
+import { sequelize } from '../config/database.js';
 
-const getAllPatients = async (req, res) => {
+export const getAllPatients = async (c: Context) => {
   try {
     const { 
-      page = 1, 
-      limit = 20, 
+      page = '1', 
+      limit = '20', 
       search = '', 
       sortBy = 'createdAt', 
       sortOrder = 'DESC' 
-    } = req.query;
+    } = c.req.query();
 
-    const offset = (page - 1) * limit;
-    const whereClause = {
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const whereClause: any = {
       role: 'patient'
     };
 
@@ -47,13 +49,13 @@ const getAllPatients = async (req, res) => {
           where: { userId: patient.id },
           attributes: [
             'status',
-            [require('sequelize').fn('COUNT', require('sequelize').col('id')), 'count']
+            [sequelize.fn('COUNT', sequelize.col('id')), 'count']
           ],
           group: ['status'],
           raw: true
         });
 
-        const queueStats = {
+        const queueStats: Record<string, number> = {
           total: 0,
           waiting: 0,
           completed: 0,
@@ -62,7 +64,7 @@ const getAllPatients = async (req, res) => {
           no_show: 0
         };
 
-        stats.forEach(stat => {
+        (stats as any[]).forEach(stat => {
           queueStats[stat.status] = parseInt(stat.count);
           queueStats.total += parseInt(stat.count);
         });
@@ -82,9 +84,9 @@ const getAllPatients = async (req, res) => {
       })
     );
 
-    const totalPages = Math.ceil(count / limit);
+    const totalPages = Math.ceil(count / parseInt(limit));
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         patients: patientsWithStats,
@@ -93,23 +95,23 @@ const getAllPatients = async (req, res) => {
           totalPages,
           totalItems: count,
           itemsPerPage: parseInt(limit),
-          hasNextPage: page < totalPages,
-          hasPrevPage: page > 1
+          hasNextPage: parseInt(page) < totalPages,
+          hasPrevPage: parseInt(page) > 1
         }
       }
     });
   } catch (error) {
     console.error('Get all patients error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getPatientDetail = async (req, res) => {
+export const getPatientDetail = async (c: Context) => {
   try {
-    const { patientId } = req.params;
+    const patientId = c.req.param('patientId');
 
     const patient = await User.findOne({
       where: { 
@@ -120,10 +122,10 @@ const getPatientDetail = async (req, res) => {
     });
 
     if (!patient) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Pasien tidak ditemukan'
-      });
+      }, 404);
     }
 
     // Get patient's queue history
@@ -145,13 +147,13 @@ const getPatientDetail = async (req, res) => {
       where: { userId: patientId },
       attributes: [
         'status',
-        [require('sequelize').fn('COUNT', require('sequelize').col('id')), 'count']
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
       ],
       group: ['status'],
       raw: true
     });
 
-    const queueStats = {
+    const queueStats: Record<string, number> = {
       total: 0,
       waiting: 0,
       completed: 0,
@@ -160,7 +162,7 @@ const getPatientDetail = async (req, res) => {
       no_show: 0
     };
 
-    stats.forEach(stat => {
+    (stats as any[]).forEach(stat => {
       queueStats[stat.status] = parseInt(stat.count);
       queueStats.total += parseInt(stat.count);
     });
@@ -174,19 +176,19 @@ const getPatientDetail = async (req, res) => {
         userId: patientId,
         appointmentDate: {
           [Op.gte]: sixMonthsAgo.toISOString().split('T')[0]
-        },
+        } as any,
         status: 'completed'
       },
       attributes: [
-        [require('sequelize').fn('DATE_TRUNC', 'month', require('sequelize').col('appointmentDate')), 'month'],
-        [require('sequelize').fn('COUNT', require('sequelize').col('id')), 'visits']
+        [sequelize.fn('DATE_TRUNC', 'month', sequelize.col('appointmentDate')), 'month'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'visits']
       ],
-      group: [require('sequelize').fn('DATE_TRUNC', 'month', require('sequelize').col('appointmentDate'))],
-      order: [[require('sequelize').fn('DATE_TRUNC', 'month', require('sequelize').col('appointmentDate')), 'ASC']],
+      group: [sequelize.fn('DATE_TRUNC', 'month', sequelize.col('appointmentDate'))],
+      order: [[sequelize.fn('DATE_TRUNC', 'month', sequelize.col('appointmentDate')), 'ASC']],
       raw: true
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         patient: patient.toJSON(),
@@ -198,17 +200,17 @@ const getPatientDetail = async (req, res) => {
     });
   } catch (error) {
     console.error('Get patient detail error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const updatePatientStatus = async (req, res) => {
+export const updatePatientStatus = async (c: Context) => {
   try {
-    const { patientId } = req.params;
-    const { isActive } = req.body;
+    const patientId = c.req.param('patientId');
+    const { isActive } = await c.req.json();
 
     const patient = await User.findOne({
       where: { 
@@ -218,29 +220,29 @@ const updatePatientStatus = async (req, res) => {
     });
 
     if (!patient) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Pasien tidak ditemukan'
-      });
+      }, 404);
     }
 
     await patient.update({ isActive });
 
-    res.json({
+    return c.json({
       success: true,
       message: `Status pasien berhasil ${isActive ? 'diaktifkan' : 'dinonaktifkan'}`,
       data: { patient: patient.toJSON() }
     });
   } catch (error) {
     console.error('Update patient status error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const getPatientStats = async (req, res) => {
+export const getPatientStats = async (c: Context) => {
   try {
     // Total patients
     const totalPatients = await User.count({
@@ -286,7 +288,7 @@ const getPatientStats = async (req, res) => {
       ]
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         totalPatients,
@@ -298,16 +300,9 @@ const getPatientStats = async (req, res) => {
     });
   } catch (error) {
     console.error('Get patient stats error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
-};
-
-module.exports = {
-  getAllPatients,
-  getPatientDetail,
-  updatePatientStatus,
-  getPatientStats
 };

@@ -1,20 +1,22 @@
-const { Notification, RescheduleRequest, Queue, User, EmergencyClosure, PracticeSettings } = require('../models');
-const { Op } = require('sequelize');
+import { Context } from 'hono';
+import { Op } from 'sequelize';
+import { Notification, EmergencyClosure, User } from '../models/index.js';
 
 // Removed complex auto-reschedule functionality
 // Emergency closure now just notifies patients to book manually
 
-const getPatientNotifications = async (req, res) => {
+export const getPatientNotifications = async (c: Context) => {
   try {
-    const userId = req.user.id;
-    const { page = 1, limit = 20, unreadOnly = false } = req.query;
+    const user = c.get('user');
+    const userId = user.id;
+    const { page = '1', limit = '20', unreadOnly = 'false' } = c.req.query();
 
-    const whereClause = { userId };
+    const whereClause: any = { userId };
     if (unreadOnly === 'true') {
       whereClause.isRead = false;
     }
 
-    const offset = (page - 1) * limit;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
     
     const notifications = await Notification.findAndCountAll({
       where: whereClause,
@@ -27,7 +29,7 @@ const getPatientNotifications = async (req, res) => {
       where: { userId, isRead: false }
     });
 
-    res.json({
+    return c.json({
       success: true,
       data: {
         notifications: notifications.rows,
@@ -36,82 +38,84 @@ const getPatientNotifications = async (req, res) => {
           total: notifications.count,
           page: parseInt(page),
           limit: parseInt(limit),
-          totalPages: Math.ceil(notifications.count / limit)
+          totalPages: Math.ceil(notifications.count / parseInt(limit))
         }
       }
     });
   } catch (error) {
     console.error('Get patient notifications error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const markNotificationAsRead = async (req, res) => {
+export const markNotificationAsRead = async (c: Context) => {
   try {
-    const { notificationId } = req.params;
-    const userId = req.user.id;
+    const notificationId = c.req.param('notificationId');
+    const user = c.get('user');
+    const userId = user.id;
 
     const notification = await Notification.findOne({
       where: { id: notificationId, userId }
     });
 
     if (!notification) {
-      return res.status(404).json({
+      return c.json({
         success: false,
         message: 'Notifikasi tidak ditemukan'
-      });
+      }, 404);
     }
 
     await notification.update({ isRead: true });
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Notifikasi berhasil ditandai sebagai dibaca'
     });
   } catch (error) {
     console.error('Mark notification as read error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
-const markAllNotificationsAsRead = async (req, res) => {
+export const markAllNotificationsAsRead = async (c: Context) => {
   try {
-    const userId = req.user.id;
+    const user = c.get('user');
+    const userId = user.id;
 
     await Notification.update(
       { isRead: true },
       { where: { userId, isRead: false } }
     );
 
-    res.json({
+    return c.json({
       success: true,
       message: 'Semua notifikasi berhasil ditandai sebagai dibaca'
     });
   } catch (error) {
     console.error('Mark all notifications as read error:', error);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: 'Terjadi kesalahan pada server'
-    });
+    }, 500);
   }
 };
 
 // Removed complex reschedule request functionality
 // Patients will book new appointments manually
 
-const createEmergencyNotifications = async (emergencyClosureId, affectedQueues) => {
+export const createEmergencyNotifications = async (emergencyClosureId: number, affectedQueues: any[]) => {
   try {
     const emergencyClosure = await EmergencyClosure.findByPk(emergencyClosureId, {
       include: [{ model: User, as: 'creator', attributes: ['fullName'] }]
     });
 
-    if (!emergencyClosure) return;
+    if (!emergencyClosure) return false;
 
     const notifications = [];
 
@@ -137,7 +141,7 @@ const createEmergencyNotifications = async (emergencyClosureId, affectedQueues) 
 
     // Bulk create notifications
     if (notifications.length > 0) {
-      await Notification.bulkCreate(notifications);
+      await Notification.bulkCreate(notifications as any);
     }
 
     // Update emergency closure to mark notifications as sent
@@ -148,11 +152,4 @@ const createEmergencyNotifications = async (emergencyClosureId, affectedQueues) 
     console.error('Create emergency notifications error:', error);
     return false;
   }
-};
-
-module.exports = {
-  getPatientNotifications,
-  markNotificationAsRead,
-  markAllNotificationsAsRead,
-  createEmergencyNotifications
 };

@@ -1,0 +1,28 @@
+{
+  "name": "antre-dokter",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "dev:client": "cd client && bun run dev",
+    "dev:server": "cd server && bun run dev",
+    "build:client": "cd client && bun run build",
+    "build:server": "cd server && bun run build",
+    "db:setup": "cd server && bun run db:setup",
+    "db:migrate": "cd server && bun run db:migrate",
+    "db:seed": "cd server && bun run db:seed"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
+  }
+}
