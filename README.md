@@ -51,60 +51,26 @@ AntreDokter/
 
 ## Quick Start
 
-### Prerequisites
-- Node.js 18+
-- PostgreSQL 12+
-
-### Installation
-
-1. **Backend Setup**
-```bash
-cd backend
-npm install
-cp .env.example .env
-# Edit .env dengan konfigurasi database
-
-# Setup database (clean production-ready)
-npm run db:setup  # Reset + migrate + seed (admin + practice settings only)
-
-npm run dev       # Start development server
-```
-
-2. **Frontend Setup**
-```bash
-cd frontend
-npm install
-cp .env.example .env
-# Edit .env dengan API URL
-
-npm start         # Start React development
-```
-
-3. **Access Application**
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:5001
-
-### Default Admin Login
-- **Phone**: 08123456789
-- **Password**: Admin123!
-
-## Production Deployment
+Make sure [bun](https://bun.sh) is installed and PostgreSQL 12+
 
 ```bash
-# Backend Production Setup
-cd backend
-npm install --production
-cp .env.example .env  # Configure with production values
-npm run db:setup      # Clean setup: admin + practice settings only
-npm start
-
-# Frontend Production Build
-cd frontend
-npm install
-cp .env.example .env  # Configure with production API URL
-npm run build
-# Serve build/ folder with web server (nginx/apache)
+bun --version
 ```
+
+Run the command below to make a new AntreDokter project
+
+```bash
+git clone https://github.com/mdestafadilah/antre-dokter.git
+```
+
+Once complete run the dev server
+
+```bash
+cd AntreDokter
+bun install
+bun run dev
+```
+
 
 ### Environment Variables
 
