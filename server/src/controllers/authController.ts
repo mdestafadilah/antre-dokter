@@ -1,10 +1,11 @@
 import { Context } from 'hono';
 import jwt, { SignOptions } from 'jsonwebtoken';
+
 import { User } from '../models/index.js';
 
 const generateToken = (userId: string): string => {
   const options: SignOptions = {
-    expiresIn: process.env.JWT_EXPIRE || '24h'
+    expiresIn: (process.env.JWT_EXPIRE || '24h') as SignOptions['expiresIn']
   };
   return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'default-secret', options);
 };
