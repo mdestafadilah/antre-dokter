@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  # ─── PostgreSQL Database ───────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: antre-dokter-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-antre_dokter}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - antre-dokter-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-antre_dokter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Backend Server (Bun + Hono) ──────────────────────────────────────────
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: antre-dokter-server
+    restart: unless-stopped
+    env_file:
+      - server/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-antre_dokter}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - antre-dokter-network
+
+  # ─── Frontend Client (React + Vite) ───────────────────────────────────────
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000/api}
+    container_name: antre-dokter-client
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - server
+    networks:
+      - antre-dokter-network
+
+volumes:
+  postgres_data:
+    name: antre-dokter-postgres-data
+
+networks:
+  antre-dokter-network:
+    name: antre-dokter-network
+    driver: bridge
