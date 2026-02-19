@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { serve } from '@hono/node-server';
-import { createServer } from 'http';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import 'dotenv/config';
 
@@ -91,11 +90,37 @@ app.onError((err, c) => {
 
 const PORT = parseInt(process.env.PORT || '3000');
 
-// Create HTTP server for Socket.IO integration
-const httpServer = createServer(serve({
-  fetch: app.fetch,
-  port: PORT,
-}));
+// Create a single HTTP server — pipe Hono requests through it
+// so Socket.IO can share the same server without double-binding the port.
+const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  // Convert Node.js req/res to Web Request/Response for Hono
+  const url = `http://${req.headers.host || 'localhost'}${req.url}`;
+  const chunks: Buffer[] = [];
+
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', async () => {
+    const body = chunks.length ? Buffer.concat(chunks) : undefined;
+
+    const webReq = new Request(url, {
+      method: req.method ?? 'GET',
+      headers: Object.fromEntries(
+        Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : v ?? ''])
+      ),
+      body: body?.length ? body : undefined,
+    });
+
+    try {
+      const webRes = await app.fetch(webReq);
+      res.statusCode = webRes.status;
+      webRes.headers.forEach((value, key) => res.setHeader(key, value));
+      const buffer = Buffer.from(await webRes.arrayBuffer());
+      res.end(buffer);
+    } catch (err) {
+      res.statusCode = 500;
+      res.end('Internal Server Error');
+    }
+  });
+});
 
 // Setup Socket.IO
 const io = new SocketIOServer(httpServer, {
