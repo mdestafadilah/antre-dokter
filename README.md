@@ -34,21 +34,6 @@ AntreDokter/
 └── README.md
 ```
 
-## Tech Stack
-
-### Backend
-- **Node.js** + Express.js
-- **PostgreSQL** + Sequelize ORM
-- **JWT** Authentication
-- **Socket.IO** untuk real-time updates
-- **Helmet** + CORS untuk security
-
-### Frontend
-- **React.js** 19 + React Router
-- **Tailwind CSS** untuk styling
-- **Axios** untuk API calls
-- **Socket.IO** client
-
 ## Quick Start
 
 Make sure [bun](https://bun.sh) is installed and PostgreSQL 12+
@@ -74,7 +59,7 @@ bun run dev
 
 ### Environment Variables
 
-**Backend (.env):**
+**Server (.env):**
 ```
 PORT=5001
 NODE_ENV=production
@@ -86,7 +71,7 @@ JWT_SECRET=your-secure-jwt-secret
 CORS_ORIGIN=https://your-frontend-domain.com
 ```
 
-**Frontend (.env):**
+**Client (.env):**
 ```
 REACT_APP_API_URL=https://your-api-domain.com/api
 GENERATE_SOURCEMAP=false
